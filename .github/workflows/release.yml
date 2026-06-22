@@ -1,0 +1,75 @@
+name: 三端打包发布
+
+# 触发条件：推送 v* 格式的 tag（例如 v1.0.0 / v1.2.3）时自动运行
+# 用法：git tag v1.0.0 && git push origin v1.0.0
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    name: 打包 (${{ matrix.os }})
+    strategy:
+      fail-fast: false       # 一个平台失败不影响其他平台继续
+      matrix:
+        include:
+          - os: windows-latest   # → Windows .exe 安装包（NSIS）
+          - os: macos-latest     # → macOS .dmg 安装包
+          - os: ubuntu-latest    # → Linux .AppImage
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      # ── 1. 拉取完整代码 ──────────────────────────────────────────
+      - name: 拉取代码
+        uses: actions/checkout@v4
+
+      # ── 2. 安装 Node.js 20（LTS） ────────────────────────────────
+      - name: 安装 Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: desktop/package-lock.json
+
+      # ── 3. Linux 额外依赖（AppImage 打包需要） ───────────────────
+      - name: 安装 Linux 打包依赖
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y libopenjp2-tools rpm
+
+      # ── 4. 安装 npm 依赖 ─────────────────────────────────────────
+      - name: 安装依赖 (desktop)
+        working-directory: desktop
+        run: npm ci
+
+      # ── 5. 构建渲染层 + 用 electron-builder 打包安装包 ──────────
+      - name: 构建并打包
+        working-directory: desktop
+        run: npm run dist
+        env:
+          # macOS 不签名时跳过公证（避免报错）
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+          # electron-builder 用 GH_TOKEN 上传 Release 附件
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── 6. 上传安装包到 GitHub Release ──────────────────────────
+      #    softprops/action-gh-release 会自动用 tag 名创建/更新 Release
+      - name: 发布到 GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          # 上传 release 目录下所有真正的安装包文件，跳过辅助文件
+          files: |
+            desktop/release/**/*.exe
+            desktop/release/**/*.dmg
+            desktop/release/**/*.AppImage
+            desktop/release/**/*.deb
+          # 自动从提交记录生成更新说明
+          generate_release_notes: true
+          # 先发为草稿，确认后手动点发布（改为 false 则直接公开发布）
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
